@@ -15,6 +15,8 @@ interface RepulsionOrbitOptions {
   mainButtonSize: number;
 }
 
+const VERY_SMALL_NUMBER = 0.00001; // Used for float comparisons
+
 export function useRepulsionAndOrbit({
   isOpen,
   centerPosition,
@@ -62,7 +64,7 @@ export function useRepulsionAndOrbit({
       );
     };
 
-    const numAngleSamples = 180; // Check every 2 degrees (360 / 180 = 2)
+    const numAngleSamples = 180; 
     const angleSampleStep = (2 * Math.PI) / numAngleSamples;
     const safeAnglesInfo: { angle: number; safe: boolean }[] = [];
     for (let i = 0; i < numAngleSamples; i++) {
@@ -73,34 +75,38 @@ export function useRepulsionAndOrbit({
     const safeArcs: { start: number; end: number; length: number }[] = [];
     let currentArcStartAngle: number | null = null;
 
-    for (let i = 0; i <= numAngleSamples; i++) { // Iterate one past to handle arc ending at the very end
-      const isCurrentSampleSafe = i < numAngleSamples ? safeAnglesInfo[i].safe : false; // Treat position after last sample as unsafe to close any open arc
-      const currentSampleAngle = i < numAngleSamples ? safeAnglesInfo[i].angle : 2 * Math.PI; // Angle for this virtual position
+    for (let i = 0; i <= numAngleSamples; i++) { 
+      const isCurrentSampleSafe = i < numAngleSamples ? safeAnglesInfo[i].safe : false; 
+      const currentSampleAngle = i < numAngleSamples ? safeAnglesInfo[i].angle : 2 * Math.PI; 
 
       if (isCurrentSampleSafe && currentArcStartAngle === null) {
         currentArcStartAngle = currentSampleAngle;
       } else if (!isCurrentSampleSafe && currentArcStartAngle !== null) {
-        // Arc ends *before* this unsafe sample, i.e., at currentSampleAngle
-        safeArcs.push({ start: currentArcStartAngle, end: currentSampleAngle, length: currentSampleAngle - currentArcStartAngle });
+        if (currentSampleAngle > currentArcStartAngle) { // Ensure arc has positive length
+            safeArcs.push({ start: currentArcStartAngle, end: currentSampleAngle, length: currentSampleAngle - currentArcStartAngle });
+        }
         currentArcStartAngle = null;
       }
     }
     
-    // Handle wrap-around case: if the first segment (starting at 0) and last segment (ending at 2*PI) are safe, merge them.
     if (safeAnglesInfo[0].safe && safeAnglesInfo[numAngleSamples - 1].safe && safeArcs.length > 1) {
-        const firstArc = safeArcs.shift(); // Arc starting near 0
-        const lastArc = safeArcs.pop();   // Arc ending near 2*PI
-        if (firstArc && lastArc) {
-          // The merged arc starts at lastArc.start and conceptually ends at firstArc.end + 2*PI
-          // Its length is the sum of their original lengths.
-          safeArcs.push({
-              start: lastArc.start, 
-              end: firstArc.end + 2 * Math.PI, // e.g. 0.2rad + 6.28rad = 6.48rad
-              length: lastArc.length + firstArc.length
-          });
-        } else { // Should not happen if logic is correct, but put them back if one was missing
-            if (firstArc) safeArcs.unshift(firstArc);
-            if (lastArc) safeArcs.push(lastArc);
+        const firstArcIndex = safeArcs.findIndex(arc => Math.abs(arc.start - 0) < VERY_SMALL_NUMBER || Math.abs(arc.start - safeAnglesInfo[0].angle) < VERY_SMALL_NUMBER);
+        const lastArcIndex = safeArcs.findIndex(arc => Math.abs(arc.end - 2 * Math.PI) < VERY_SMALL_NUMBER || Math.abs(arc.end - (safeAnglesInfo[numAngleSamples-1].angle + angleSampleStep)) < VERY_SMALL_NUMBER);
+
+        if (firstArcIndex !== -1 && lastArcIndex !== -1 && firstArcIndex !== lastArcIndex) {
+            const firstArc = safeArcs[firstArcIndex];
+            const lastArc = safeArcs[lastArcIndex];
+
+            // Remove old arcs
+            const newSafeArcs = safeArcs.filter((_, index) => index !== firstArcIndex && index !== lastArcIndex);
+            
+            // Add merged arc
+            newSafeArcs.push({
+                start: lastArc.start, 
+                end: firstArc.end + 2 * Math.PI, 
+                length: lastArc.length + firstArc.length
+            });
+            safeArcs.splice(0, safeArcs.length, ...newSafeArcs); // Replace safeArcs content
         }
     }
 
@@ -108,18 +114,28 @@ export function useRepulsionAndOrbit({
 
     let totalSafeAngleLength = safeArcs.reduce((sum, arc) => sum + arc.length, 0);
     
-    // Prevent division by zero or extremely small lengths causing issues
-    if (totalSafeAngleLength < 0.001) return [];
+    if (totalSafeAngleLength < VERY_SMALL_NUMBER) { // If total safe length is negligible, effectively no space
+        // Consider placing all items at a single point (e.g., middle of the largest (or first) tiny arc)
+        // For now, returning empty means they won't be shown, which might be better than an unclickable stack.
+        // Or, if we must show them, this is where extreme stacking occurs.
+        // Let's try to stack them in the middle of the first (potentially tiny) arc.
+        const newPositions: ItemPosition[] = [];
+        const fallbackAngle = (safeArcs[0].start + safeArcs[0].length / 2) % (2 * Math.PI);
+        for (let i = 0; i < numItems; i++) {
+            newPositions.push({
+                x: orbitRadius * Math.cos(fallbackAngle),
+                y: orbitRadius * Math.sin(fallbackAngle),
+                angle: fallbackAngle,
+            });
+        }
+        return newPositions.sort((a,b) => a.angle - b.angle); // All angles are same, but good practice
+    }
 
+    const newPositions: ItemPosition[] = [];
+    if (numItems === 0) return newPositions;
 
-    const positions: ItemPosition[] = [];
-    if (numItems === 0) return positions;
-
-    // Distribute items across all safe arcs proportionally.
     const anglePerSlot = totalSafeAngleLength / numItems; 
-    let accumulatedAngleInConcatenatedSpace = 0; // Tracks progress through the total available safe angle
-
-    // Sort arcs by their start angle to process them in visual order (especially after potential merge)
+    
     safeArcs.sort((a, b) => a.start - b.start);
 
     for (let itemIndex = 0; itemIndex < numItems; itemIndex++) {
@@ -128,41 +144,48 @@ export function useRepulsionAndOrbit({
       
       let currentArcAccumulatedLength = 0;
       for (const arc of safeArcs) {
-        if (itemCenterInConcatenatedSpace >= currentArcAccumulatedLength &&
-            itemCenterInConcatenatedSpace < currentArcAccumulatedLength + arc.length + 0.0001) { // Add epsilon for float comparisons at boundary
+        // Check if the item's center falls within the current arc segment in the concatenated space
+        // Add tolerance for floating point comparisons
+        if (itemCenterInConcatenatedSpace >= currentArcAccumulatedLength - VERY_SMALL_NUMBER &&
+            itemCenterInConcatenatedSpace < currentArcAccumulatedLength + arc.length + VERY_SMALL_NUMBER) { 
             
-            const angleWithinArc = itemCenterInConcatenatedSpace - currentArcAccumulatedLength;
+            // Clamp the angle within the arc to avoid overshooting due to tolerance
+            const angleWithinArcRaw = itemCenterInConcatenatedSpace - currentArcAccumulatedLength;
+            const angleWithinArc = Math.max(0, Math.min(angleWithinArcRaw, arc.length)); // Clamp to [0, arc.length]
+            
             let finalAngle = arc.start + angleWithinArc;
-            
-            finalAngle = finalAngle % (2 * Math.PI); // Normalize angle to be within [0, 2*PI)
+            finalAngle = finalAngle % (2 * Math.PI); // Normalize angle
 
-            positions[itemIndex] = {
+            newPositions.push({
                 x: orbitRadius * Math.cos(finalAngle),
                 y: orbitRadius * Math.sin(finalAngle),
                 angle: finalAngle,
-            };
+            });
             foundPositionForItem = true;
             break; 
         }
         currentArcAccumulatedLength += arc.length;
       }
-       // If somehow a position wasn't found (e.g. float precision issues with totalSafeAngleLength)
-       // This fallback is unlikely if logic is sound but good for robustness.
-      if (!foundPositionForItem && positions.length < numItems && safeArcs.length > 0) {
-        // Place it in the middle of the first/largest arc as a fallback (crude)
-        const fallbackArc = safeArcs[0];
-        const fallbackAngle = (fallbackArc.start + fallbackArc.length / 2) % (2 * Math.PI);
-         positions[itemIndex] = {
+      
+      if (!foundPositionForItem) {
+        // This fallback should ideally not be reached if totalSafeAngleLength > 0 and logic is perfect.
+        // It indicates an issue mapping itemCenterInConcatenatedSpace to an arc, likely due to float precision
+        // accumulation or if totalSafeAngleLength is inconsistent with summed arc lengths.
+        console.warn("RadialMenu: Item could not be placed in any safe arc. Defaulting placement to start of first safe arc.", 
+          { itemIndex, itemCenterInConcatenatedSpace, totalSafeAngleLength, safeArcs });
+
+        // Robust fallback: place it at the start of the first safe arc.
+        // Since safeArcs.length > 0 is guaranteed here, safeArcs[0] is accessible.
+        const fallbackAngle = safeArcs[0].start % (2 * Math.PI);
+        newPositions.push({
             x: orbitRadius * Math.cos(fallbackAngle),
             y: orbitRadius * Math.sin(fallbackAngle),
             angle: fallbackAngle,
-        };
+        });
       }
     }
     
-    // Ensure all items got a position, filter out any undefined if fallbacks failed.
-    // The direct assignment positions[itemIndex] should preserve order.
-    return positions.filter(p => p).sort((a, b) => a.angle - b.angle);
+    return newPositions.sort((a, b) => a.angle - b.angle);
 
   }, [isOpen, centerPosition, numItems, orbitRadius, itemSize, mainButtonSize, viewportSize]);
 
