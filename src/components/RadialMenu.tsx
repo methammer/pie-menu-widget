@@ -1,4 +1,4 @@
-import React, { useState, useRef, useMemo } from 'react';
+import React, { useState, useRef, useMemo, useEffect } from 'react';
 import { Menu, X } from 'lucide-react';
 import { useDraggable } from '../hooks/useDraggable';
 import { useRepulsionAndOrbit, ItemPosition } from '../hooks/useRepulsionAndOrbit';
@@ -17,7 +17,7 @@ interface RadialMenuProps {
   mainButtonSize?: number;
   itemIconSize?: number;
   mainIconSize?: number;
-  dragThreshold?: number; // Optional: pass threshold to useDraggable
+  dragThreshold?: number;
 }
 
 const DEFAULT_ORBIT_RADIUS = 100;
@@ -25,7 +25,8 @@ const DEFAULT_ITEM_SIZE = 40;
 const DEFAULT_MAIN_BUTTON_SIZE = 56;
 const DEFAULT_ITEM_ICON_SIZE = 20;
 const DEFAULT_MAIN_ICON_SIZE = 28;
-const DEFAULT_DRAG_THRESHOLD = 5; // Default threshold for drag vs click
+const DEFAULT_DRAG_THRESHOLD = 5;
+const TOGGLE_LOCK_DURATION = 100; // milliseconds
 
 export const RadialMenu: React.FC<RadialMenuProps> = ({
   items,
@@ -37,11 +38,12 @@ export const RadialMenu: React.FC<RadialMenuProps> = ({
   dragThreshold = DEFAULT_DRAG_THRESHOLD,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
+  const [isToggleLocked, setIsToggleLocked] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
   const { 
     position, 
-    handleMouseDown: draggableHandleMouseDown, 
+    handleInteractionStart,
     hasMovedBeyondThreshold 
   } = useDraggable(menuRef, {
     initialPosition: { 
@@ -61,15 +63,24 @@ export const RadialMenu: React.FC<RadialMenuProps> = ({
     mainButtonSize,
   });
 
-  const handleMainButtonMouseUp = (e: React.MouseEvent) => {
-    // e.stopPropagation(); // Supprimé pour permettre à useDraggable de recevoir mouseup
-    if (!hasMovedBeyondThreshold) {
-      console.log('[RadialMenu] handleMainButtonMouseUp: Toggling menu. hasMovedBeyondThreshold:', hasMovedBeyondThreshold);
-      setIsOpen(prev => !prev);
-    } else {
-      console.log('[RadialMenu] handleMainButtonMouseUp: Drag detected, not toggling menu. hasMovedBeyondThreshold:', hasMovedBeyondThreshold);
+  const handleMainButtonRelease = () => { 
+    if (isToggleLocked) {
+      console.log('[RadialMenu] Toggle is locked, ignoring release.');
+      return;
     }
-    // hasMovedBeyondThreshold est géré et réinitialisé par useDraggable
+
+    console.log('[RadialMenu] handleMainButtonRelease. hasMovedBeyondThreshold:', hasMovedBeyondThreshold);
+    if (!hasMovedBeyondThreshold) {
+      console.log('[RadialMenu] Toggling menu.');
+      setIsOpen(prev => !prev);
+      setIsToggleLocked(true);
+      setTimeout(() => {
+        setIsToggleLocked(false);
+        console.log('[RadialMenu] Toggle lock released.');
+      }, TOGGLE_LOCK_DURATION);
+    } else {
+      console.log('[RadialMenu] Drag detected, not toggling menu.');
+    }
   };
 
   const MainIcon = isOpen ? X : Menu;
@@ -100,8 +111,9 @@ export const RadialMenu: React.FC<RadialMenuProps> = ({
           className="rounded-full bg-sky-500 hover:bg-sky-600 text-white flex items-center justify-center shadow-lg cursor-pointer"
           title={item.label}
           onClick={() => {
+            console.log(`[RadialMenu] Item "${item.label}" clicked/tapped.`);
             item.action?.();
-            setIsOpen(false);
+            setIsOpen(false); // Close menu after item action
           }}
         >
           <item.icon size={itemIconSize} />
@@ -121,13 +133,15 @@ export const RadialMenu: React.FC<RadialMenuProps> = ({
         width: mainButtonSize,
         height: mainButtonSize,
         zIndex: 1000,
+        touchAction: 'none', 
       }}
     >
-      {/* Main Button */}
       <button
         type="button"
-        onMouseDown={draggableHandleMouseDown}
-        onMouseUp={handleMainButtonMouseUp} // Ce gestionnaire est sur le bouton
+        onMouseDown={handleInteractionStart}
+        onTouchStart={handleInteractionStart}
+        onMouseUp={handleMainButtonRelease}
+        onTouchEnd={handleMainButtonRelease}
         style={{
           width: mainButtonSize,
           height: mainButtonSize,
@@ -139,7 +153,6 @@ export const RadialMenu: React.FC<RadialMenuProps> = ({
         <MainIcon size={mainIconSize} />
       </button>
 
-      {/* Item Buttons */}
       <div className="absolute top-0 left-0" style={{pointerEvents: isOpen ? 'auto' : 'none'}}>
         {memoizedItems}
       </div>
